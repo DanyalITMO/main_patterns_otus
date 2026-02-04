@@ -1,0 +1,28 @@
+name: homework1
+
+on:
+  push:
+    paths:
+      - 'hw1/**'
+    branches: [ hw1 ]
+
+  pull_request:  # При создании/обновлении PR
+    paths:
+      - 'hw1/**'
+    branches: [ main ]  # PR только в main ветку
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Configure and Build
+      run: |
+        cd hw1
+        cmake -B build -DCMAKE_CXX_STANDARD=20
+        cmake --build build
+    
+    - name: Run Tests
+      run: |
+        cd hw1 && cd build && ctest --output-on-failure
