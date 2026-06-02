@@ -1,0 +1,29 @@
+name: homework4
+
+on:
+  push:
+    paths:
+      - 'hw4/**'
+    branches: [ hw4 ]
+
+  pull_request:
+    paths:
+      - 'hw4/**'
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and Build
+        run: |
+          cd hw4
+          cmake -B build -DCMAKE_CXX_STANDARD=20
+          cmake --build build
+
+      - name: Run Tests
+        run: |
+          cd hw4/build && ctest --output-on-failure
