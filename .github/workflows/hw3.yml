@@ -1,0 +1,29 @@
+name: homework3
+
+on:
+  push:
+    paths:
+      - 'hw3/**'
+    branches: [ hw3 ]
+
+  pull_request:
+    paths:
+      - 'hw3/**'
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and Build
+        run: |
+          cd hw3
+          cmake -B build -DCMAKE_CXX_STANDARD=20
+          cmake --build build
+
+      - name: Run Tests
+        run: |
+          cd hw3/build && ctest --output-on-failure
