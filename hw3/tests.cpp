@@ -1,7 +1,7 @@
 #include "Commands.h"
+#include "EventLoop.h"
 #include "ExceptionHandler.h"
 #include "ExceptionHandlerCommands.h"
-#include "Executor.h"
 
 #include <gtest/gtest.h>
 
@@ -25,20 +25,19 @@ TEST_F(ExceptionHandlerFixture, LogCommand_writes_exception_message_to_stderr) {
   EXPECT_NE(out.find("boom"), std::string::npos);
 }
 
-// --- Обработчик: ставит в очередь команду лога ---
-TEST_F(ExceptionHandlerFixture, LogHandlerCommand_execute_enqueues_LogCommand) {
-  std::queue<ICommandPtr> queue;
+// --- Обработчик: возвращает команду лога ---
+TEST_F(ExceptionHandlerFixture, LogHandlerCommand_execute_returns_LogCommand) {
   try {
     throw std::runtime_error("fire");
   } catch (const std::exception &e) {
-    LogHandlerCommand handler(queue, e);
-    handler.execute();
+    LogHandlerCommand handler(e);
+    auto cmds = handler.execute();
+    ASSERT_EQ(cmds.size(), 1u);
+    testing::internal::CaptureStderr();
+    cmds.front()->execute();
+    const std::string out = testing::internal::GetCapturedStderr();
+    EXPECT_NE(out.find("fire"), std::string::npos);
   }
-  ASSERT_EQ(queue.size(), 1u);
-  testing::internal::CaptureStderr();
-  queue.front()->execute();
-  const std::string out = testing::internal::GetCapturedStderr();
-  EXPECT_NE(out.find("fire"), std::string::npos);
 }
 
 // --- Команда-повторитель ---
@@ -61,19 +60,18 @@ TEST_F(ExceptionHandlerFixture, RepeatCommand_execute_delegates_to_inner_command
   EXPECT_EQ(n, 2);
 }
 
-// --- Обработчик: ставит в очередь повторитель упавшей команды ---
+// --- Обработчик: возвращает повторитель упавшей команды ---
 class AlwaysThrowCommand : public ICommand {
  public:
   void execute() override { throw std::runtime_error("again"); }
 };
 
-TEST_F(ExceptionHandlerFixture, RepeatHandlerCommand_execute_enqueues_RepeatCommand_for_failed) {
-  std::queue<ICommandPtr> queue;
+TEST_F(ExceptionHandlerFixture, RepeatHandlerCommand_execute_returns_RepeatCommand_for_failed) {
   auto failed = std::make_shared<AlwaysThrowCommand>();
-  RepeatHandlerCommand handler(queue, failed);
-  handler.execute();
-  ASSERT_EQ(queue.size(), 1u);
-  auto repeat = queue.front();
+  RepeatHandlerCommand handler(failed);
+  auto cmds = handler.execute();
+  ASSERT_EQ(cmds.size(), 1u);
+  auto repeat = cmds.front();
   ASSERT_NE(repeat, nullptr);
   EXPECT_THROW(repeat->execute(), std::runtime_error);
 }
@@ -84,26 +82,26 @@ class ThrowRuntimeCommand : public ICommand {
   void execute() override { throw std::runtime_error("from_cmd"); }
 };
 
-TEST_F(ExceptionHandlerFixture, Executor_log_handler_runs_enqueued_log_command) {
-  Executor executor;
+TEST_F(ExceptionHandlerFixture, EventLoop_log_handler_runs_enqueued_log_command) {
+  EventLoop eventLoop;
   g_exceptionHandler.register_handle(
       ThrowRuntimeCommand{}, std::runtime_error(""),
-      [&executor](const ICommandPtr &, const std::exception &ex) {
-        return std::make_shared<LogHandlerCommand>(executor._queue, ex);
+      [](const ICommandPtr &, const std::exception &ex) {
+        return std::make_shared<LogHandlerCommand>(ex);
       });
-  executor._queue.push(std::make_shared<ThrowRuntimeCommand>());
+  eventLoop.push(std::make_shared<ThrowRuntimeCommand>());
   testing::internal::CaptureStderr();
-  executor.handle_commands();
+  eventLoop.handle_commands();
   const std::string out = testing::internal::GetCapturedStderr();
   EXPECT_NE(out.find("from_cmd"), std::string::npos);
 }
 
 // --- Сквозной сценарий: после исключения в очередь кладётся повторитель ---
 struct CountThenThrow : ICommand {
-  int *attempts;
-  explicit CountThenThrow(int *a) : attempts(a) {}
+  int& attempts;
+  explicit CountThenThrow(int& a) : attempts(a) {}
   void execute() override {
-    ++*attempts;
+    ++attempts;
     throw std::runtime_error("retry_then_log");
   }
 };
@@ -111,24 +109,24 @@ struct CountThenThrow : ICommand {
 
 //8. С помощью Команд из пункта 4 и пункта 6 реализовать следующую обработку исключений:
 // при первом выбросе исключения повторить команду, при повторном выбросе исключения записать информацию в лог.
-TEST_F(ExceptionHandlerFixture, Executor_retry_once_then_logs) {
-  Executor executor;
+TEST_F(ExceptionHandlerFixture, EventLoop_retry_once_then_logs) {
+  EventLoop eventLoop;
   static int typeid_stub = 0;
   g_exceptionHandler.register_handle(
-      CountThenThrow{&typeid_stub}, std::runtime_error(""),
-      [&executor](const ICommandPtr &cmd, const std::exception &) {
-        return std::make_shared<RepeatHandlerCommand>(executor._queue, cmd);
+      CountThenThrow{typeid_stub}, std::runtime_error(""),
+      [](const ICommandPtr &cmd, const std::exception &) {
+        return std::make_shared<RepeatHandlerCommand>(cmd);
       });
   g_exceptionHandler.register_handle(
       RepeatCommand{ICommandPtr{}}, std::runtime_error(""),
-      [&executor](const ICommandPtr &, const std::exception &ex) {
-        return std::make_shared<LogHandlerCommand>(executor._queue, ex);
+      [](const ICommandPtr &, const std::exception &ex) {
+        return std::make_shared<LogHandlerCommand>(ex);
       });
 
   int attempts = 0;
-  executor._queue.push(std::make_shared<CountThenThrow>(&attempts));
+  eventLoop.push(std::make_shared<CountThenThrow>(attempts));
   testing::internal::CaptureStderr();
-  executor.handle_commands();
+  eventLoop.handle_commands();
   const std::string out = testing::internal::GetCapturedStderr();
 
   EXPECT_EQ(attempts, 2) << "исходная команда + один повтор через RepeatCommand";
@@ -139,28 +137,28 @@ TEST_F(ExceptionHandlerFixture, Executor_retry_once_then_logs) {
 
 //9. Реализовать стратегию обработки исключения - повторить два раза, потом записать в лог.
 //Указание: создать новую команду, точно такую же как в пункте 6. Тип этой команды будет показывать, что Команду не удалось выполнить два раза.
-TEST_F(ExceptionHandlerFixture, Executor_retry_twice_then_logs) {
-  Executor executor;
+TEST_F(ExceptionHandlerFixture, EventLoop_retry_twice_then_logs) {
+  EventLoop eventLoop;
   static int typeid_stub = 0;
   g_exceptionHandler.register_handle(
-      CountThenThrow{&typeid_stub}, std::runtime_error(""),
-      [&executor](const ICommandPtr &cmd, const std::exception &) {
-        return std::make_shared<RepeatHandlerCommand>(executor._queue, cmd);
+      CountThenThrow{typeid_stub}, std::runtime_error(""),
+      [](const ICommandPtr &cmd, const std::exception &) {
+        return std::make_shared<RepeatHandlerCommand>(cmd);
       });
   g_exceptionHandler.register_handle(
       RepeatCommand{ICommandPtr{}}, std::runtime_error(""),
-      [&executor](const ICommandPtr & cmd, const std::exception &) {
-        return std::make_shared<RepeatTwiceHandlerCommand>(executor._queue, cmd);
+      [](const ICommandPtr &cmd, const std::exception &) {
+        return std::make_shared<RepeatTwiceHandlerCommand>(cmd);
       });
   g_exceptionHandler.register_handle(
       RepeatTwiceCommand{ICommandPtr{}}, std::runtime_error(""),
-      [&executor](const ICommandPtr &, const std::exception &ex) {
-        return std::make_shared<LogHandlerCommand>(executor._queue, ex);
+      [](const ICommandPtr &, const std::exception &ex) {
+        return std::make_shared<LogHandlerCommand>(ex);
       });
   int attempts = 0;
-  executor._queue.push(std::make_shared<CountThenThrow>(&attempts));
+  eventLoop.push(std::make_shared<CountThenThrow>(attempts));
   testing::internal::CaptureStderr();
-  executor.handle_commands();
+  eventLoop.handle_commands();
   const std::string out = testing::internal::GetCapturedStderr();
 
   EXPECT_EQ(attempts, 3) << "исходная команда + 2 повтора через";

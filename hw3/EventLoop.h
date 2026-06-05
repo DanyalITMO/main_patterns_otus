@@ -4,11 +4,16 @@
 #include "ICommand.h"
 
 #include <queue>
+#include <vector>
 
-class Executor {
+class EventLoop {
  public:
+  void push(ICommandPtr cmd) {
+    _queue.push(std::move(cmd));
+  }
+
   void handle_commands() {
-    while (_active && !_queue.empty()) {
+    while (!_queue.empty()) {
       auto cmd = _queue.front();
       _queue.pop();
       try {
@@ -19,14 +24,14 @@ class Executor {
         // обработчика исключения делается на основе экземпляра перехваченного исключения и команды, которая выбросила исключение.
         auto handler = g_exceptionHandler.handle(cmd, e);
         if (handler) {
-          handler->execute();
+          for (auto &nc : handler->execute()) {
+            _queue.push(std::move(nc));
+          }
         }
       }
     }
   }
 
-  std::queue<ICommandPtr> _queue;
-
  private:
-  bool _active = true;
+  std::queue<ICommandPtr> _queue;
 };

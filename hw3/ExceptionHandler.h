@@ -9,6 +9,7 @@
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 struct TypePairHash {
   std::size_t operator()(
@@ -22,7 +23,7 @@ struct TypePairHash {
 class IExceptionHandlerCommand {
 public:
   virtual ~IExceptionHandlerCommand() = default;
-  virtual void execute() noexcept = 0;
+  virtual std::vector<ICommandPtr> execute() noexcept = 0;
 };
 
 
